@@ -514,8 +514,8 @@ with tab3:
         else:
             posted = None
 
-        resp_rate = (responded / outreached * 100) if (outreached and outreached > 0) else None
-        post_rate = (posted / responded * 100) if (responded and responded > 0) else None
+        resp_rate = (int(responded) / int(outreached) * 100) if (outreached is not None and int(outreached) > 0) else None
+        post_rate = (int(posted) / int(responded) * 100) if (responded is not None and int(responded) > 0) else None
 
         return {
             "Count": count_t,
