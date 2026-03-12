@@ -1,0 +1,853 @@
+"""
+Agency 8 — Influencer Analytics (Streamlit Web App)
+"""
+
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+import numpy as np
+
+# ── Page config ──────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Agency 8 — Influencer Analytics", layout="wide")
+
+# ── CSS ───────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+.stTabs [data-baseweb="tab-list"] { gap: 8px; border-bottom: 1px solid #333; }
+.stTabs [data-baseweb="tab"] { padding: 8px 20px; border-radius: 6px 6px 0 0; font-weight: 500; color: #aaa; }
+.stTabs [aria-selected="true"] { background-color: #1a1a2e; color: #fff; border-bottom: 2px solid #e84393; }
+[data-testid="metric-container"] { background-color: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; }
+[data-testid="stExpander"] { border: 1px solid #1f2937; border-radius: 8px; margin-bottom: 8px; }
+[data-testid="stButton"] button { border-radius: 8px; font-weight: 600; letter-spacing: 0.3px; }
+[data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
+h2, h3 { color: #f0f0f0; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Branding ──────────────────────────────────────────────────────────────────
+st.markdown(
+    "<h1 style='margin-bottom:0;'>Agency 8 "
+    "<span style='color:#9b59b6;font-weight:800;'>·</span></h1>"
+    "<p style='color:#888;font-size:1.1rem;margin-top:0;'>Influencer Analytics</p>",
+    unsafe_allow_html=True,
+)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+SHOPIFY_COLOR = "#9b59b6"
+PALETTE = ["#4a90d9", "#9b59b6", "#22c55e", "#f59e0b", "#ef4444", "#06b6d4", "#ec4899", "#84cc16"]
+CHART_LAYOUT = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(color="#f0f0f0"),
+    margin=dict(l=20, r=20, t=40, b=20),
+)
+
+TIER_ORDER = ["Nano", "Micro", "Mid-tier", "Macro", "Mega"]
+TIER_COLORS = {
+    "Nano": "#4a90d9",
+    "Micro": "#22c55e",
+    "Mid-tier": "#f59e0b",
+    "Macro": "#9b59b6",
+    "Mega": "#ef4444",
+}
+
+
+def assign_tier(followers):
+    """Assign a follower tier label based on follower count."""
+    if pd.isna(followers):
+        return "Unknown"
+    f = float(followers)
+    if f < 10_000:
+        return "Nano"
+    if f < 50_000:
+        return "Micro"
+    if f < 250_000:
+        return "Mid-tier"
+    if f < 1_000_000:
+        return "Macro"
+    return "Mega"
+
+
+# ── Column auto-detection ─────────────────────────────────────────────────────
+COLUMN_HINTS = {
+    "name":          ["name"],
+    "vertical":      ["vertical"],
+    "platform":      ["primary platform", "platform"],
+    "followers":     ["followers on primary", "followers"],
+    "engagement":    ["engagement rate", "engagement"],
+    "posts_90":      ["posts last 90", "posts 90", "posts_90", "post count"],
+    "emv":           ["est. emv", "emv", "estimated emv"],
+    "gender":        ["gender"],
+    "status":        ["status"],
+    "inbound":       ["inbound"],
+    "campaign":      ["campaign"],
+    "outreach_date": ["outreach date", "outreach_date", "date outreached"],
+    "reply_date":    ["reply date", "reply_date", "date replied"],
+    "ig_handle":     ["clean ig handle", "ig handle", "instagram handle"],
+    "tt_handle":     ["clean tt handle", "tiktok handle", "tt handle"],
+}
+
+COLUMN_LABELS = {
+    "name":          "Name",
+    "vertical":      "Vertical",
+    "platform":      "Primary Platform",
+    "followers":     "Followers on Primary Platform",
+    "engagement":    "Engagement Rate",
+    "posts_90":      "Posts Last 90 Days",
+    "emv":           "Est. EMV",
+    "gender":        "Gender",
+    "status":        "Status",
+    "inbound":       "Inbound?",
+    "campaign":      "Campaign",
+    "outreach_date": "Outreach Date",
+    "reply_date":    "Reply Date",
+    "ig_handle":     "Clean IG Handle",
+    "tt_handle":     "Clean TT Handle",
+}
+
+
+def auto_detect_columns(df_columns):
+    """Return a dict mapping field_key -> detected column name (or empty string)."""
+    cols_lower = {c.lower(): c for c in df_columns}
+    detected = {}
+    for field, hints in COLUMN_HINTS.items():
+        found = ""
+        for hint in hints:
+            for col_lower, col_orig in cols_lower.items():
+                if hint in col_lower:
+                    found = col_orig
+                    break
+            if found:
+                break
+        detected[field] = found
+    return detected
+
+
+def safe_numeric(series):
+    """Strip $ % commas then coerce to float."""
+    return pd.to_numeric(
+        series.astype(str).str.replace(r"[$,%]", "", regex=True).str.strip(),
+        errors="coerce",
+    )
+
+
+def fmt_number(n, decimals=0):
+    """Format large numbers with K/M suffixes."""
+    if pd.isna(n):
+        return "—"
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.1f}K"
+    return f"{n:,.{decimals}f}"
+
+
+def fmt_currency(n):
+    if pd.isna(n):
+        return "—"
+    if n >= 1_000_000:
+        return f"${n/1_000_000:.2f}M"
+    if n >= 1_000:
+        return f"${n/1_000:.1f}K"
+    return f"${n:,.0f}"
+
+
+# ── Chart helpers ─────────────────────────────────────────────────────────────
+def apply_dark_layout(fig, title=""):
+    fig.update_layout(**CHART_LAYOUT, title=title)
+    fig.update_xaxes(gridcolor="#1f2937", zerolinecolor="#1f2937")
+    fig.update_yaxes(gridcolor="#1f2937", zerolinecolor="#1f2937")
+    return fig
+
+
+# ── File uploader ─────────────────────────────────────────────────────────────
+uploaded_file = st.file_uploader("Upload master list CSV", type=["csv"])
+
+if uploaded_file is None:
+    st.info("Upload a master list CSV to get started.")
+    st.stop()
+
+# ── Read CSV ──────────────────────────────────────────────────────────────────
+try:
+    raw_df = pd.read_csv(uploaded_file, dtype=str)
+except Exception as e:
+    st.error(f"Could not read CSV: {e}")
+    st.stop()
+
+if raw_df.empty:
+    st.error("The uploaded CSV appears to be empty.")
+    st.stop()
+
+# Strip whitespace from column names
+raw_df.columns = raw_df.columns.str.strip()
+
+# ── Column mapping expander ───────────────────────────────────────────────────
+detected = auto_detect_columns(raw_df.columns.tolist())
+all_cols = [""] + raw_df.columns.tolist()
+
+with st.expander("Column Mapping (auto-detected — adjust if needed)", expanded=False):
+    mapping = {}
+    cols_ui = st.columns(3)
+    field_keys = list(COLUMN_HINTS.keys())
+    for i, field in enumerate(field_keys):
+        with cols_ui[i % 3]:
+            default_idx = all_cols.index(detected[field]) if detected[field] in all_cols else 0
+            mapping[field] = st.selectbox(
+                COLUMN_LABELS[field],
+                options=all_cols,
+                index=default_idx,
+                key=f"map_{field}",
+            )
+
+analyze = st.button("Analyze", type="primary")
+
+if not analyze:
+    st.info("Click **Analyze** to generate the report.")
+    st.stop()
+
+# ── Build working dataframe ───────────────────────────────────────────────────
+df = raw_df.copy()
+
+def get_col(field):
+    """Return mapped column name or None."""
+    return mapping.get(field) or None
+
+
+def col_series(field):
+    """Return the series for a mapped field, or an empty series."""
+    c = get_col(field)
+    if c and c in df.columns:
+        return df[c]
+    return pd.Series([pd.NA] * len(df), index=df.index)
+
+
+# Convert numeric columns
+for num_field in ["followers", "engagement", "posts_90", "emv"]:
+    c = get_col(num_field)
+    if c and c in df.columns:
+        df[c] = safe_numeric(df[c])
+
+# Assign follower tiers
+followers_col = get_col("followers")
+if followers_col:
+    df["_tier"] = df[followers_col].apply(assign_tier)
+else:
+    df["_tier"] = "Unknown"
+
+# Parse dates
+for date_field in ["outreach_date", "reply_date"]:
+    c = get_col(date_field)
+    if c and c in df.columns:
+        df[c] = pd.to_datetime(df[c], errors="coerce")
+
+# Compute days_to_reply
+outreach_col = get_col("outreach_date")
+reply_col = get_col("reply_date")
+if outreach_col and reply_col and outreach_col in df.columns and reply_col in df.columns:
+    df["_days_to_reply"] = (df[reply_col] - df[outreach_col]).dt.days
+else:
+    df["_days_to_reply"] = pd.NA
+
+vertical_col = get_col("vertical")
+platform_col = get_col("platform")
+followers_col = get_col("followers")
+engagement_col = get_col("engagement")
+posts_col = get_col("posts_90")
+emv_col = get_col("emv")
+gender_col = get_col("gender")
+status_col = get_col("status")
+inbound_col = get_col("inbound")
+campaign_col = get_col("campaign")
+name_col = get_col("name")
+
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Overview",
+    "Vertical Deep Dive",
+    "Follower Tier Analysis",
+    "Outreach Effectiveness",
+    "Campaign Analysis",
+])
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 1 — OVERVIEW
+# ═════════════════════════════════════════════════════════════════════════════
+with tab1:
+    st.markdown("### Overview")
+
+    total = len(df)
+    n_verticals = df[vertical_col].nunique() if vertical_col else 0
+    avg_followers = df[followers_col].mean() if followers_col else None
+    avg_eng = df[engagement_col].mean() if engagement_col else None
+    total_emv = df[emv_col].sum() if emv_col else None
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Influencers", f"{total:,}")
+    c2.metric("Total Verticals", f"{n_verticals}")
+    c3.metric("Avg Followers", fmt_number(avg_followers))
+    c4.metric("Avg Engagement Rate", f"{avg_eng:.2f}%" if avg_eng is not None and not np.isnan(avg_eng) else "—")
+    c5.metric("Total Est. EMV", fmt_currency(total_emv))
+
+    st.markdown("---")
+
+    col_l, col_r = st.columns(2)
+
+    # Left: influencer count per vertical
+    with col_l:
+        if vertical_col:
+            vc = df[vertical_col].dropna().value_counts().reset_index()
+            vc.columns = ["Vertical", "Count"]
+            vc = vc.sort_values("Count")
+            fig = go.Figure(go.Bar(
+                x=vc["Count"], y=vc["Vertical"],
+                orientation="h",
+                marker_color=SHOPIFY_COLOR,
+                text=vc["Count"],
+                textposition="outside",
+            ))
+            apply_dark_layout(fig, "Influencers by Vertical")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No Vertical column mapped.")
+
+    # Right: platform split
+    with col_r:
+        if platform_col:
+            pc = df[platform_col].dropna().value_counts()
+            fig = go.Figure(go.Pie(
+                labels=pc.index,
+                values=pc.values,
+                hole=0.45,
+                marker=dict(colors=PALETTE[:len(pc)]),
+                textinfo="label+percent",
+            ))
+            apply_dark_layout(fig, "Platform Split")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No Platform column mapped.")
+
+    # Avg engagement per vertical
+    if vertical_col and engagement_col:
+        eng_v = (
+            df[[vertical_col, engagement_col]]
+            .dropna()
+            .groupby(vertical_col)[engagement_col]
+            .mean()
+            .reset_index()
+            .sort_values(engagement_col)
+        )
+        eng_v.columns = ["Vertical", "Avg Engagement Rate"]
+        fig = go.Figure(go.Bar(
+            x=eng_v["Avg Engagement Rate"],
+            y=eng_v["Vertical"],
+            orientation="h",
+            marker_color="#4a90d9",
+            text=eng_v["Avg Engagement Rate"].map(lambda x: f"{x:.2f}%"),
+            textposition="outside",
+        ))
+        apply_dark_layout(fig, "Avg Engagement Rate by Vertical")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        if not vertical_col or not engagement_col:
+            st.info("Map Vertical and Engagement Rate columns to see engagement by vertical.")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 2 — VERTICAL DEEP DIVE
+# ═════════════════════════════════════════════════════════════════════════════
+with tab2:
+    st.markdown("### Vertical Deep Dive")
+
+    if not vertical_col:
+        st.warning("No Vertical column mapped. Please check column mapping.")
+    else:
+        verticals = sorted(df[vertical_col].dropna().unique().tolist())
+        if not verticals:
+            st.info("No vertical data found.")
+        else:
+            selected_v = st.selectbox("Select a Vertical", verticals)
+            vdf = df[df[vertical_col] == selected_v].copy()
+
+            count_v = len(vdf)
+            avg_fol_v = vdf[followers_col].mean() if followers_col else None
+            avg_eng_v = vdf[engagement_col].mean() if engagement_col else None
+            avg_emv_v = vdf[emv_col].mean() if emv_col else None
+            total_posts_v = vdf[posts_col].sum() if posts_col else None
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Influencers", f"{count_v:,}")
+            c2.metric("Avg Followers", fmt_number(avg_fol_v))
+            c3.metric("Avg Engagement", f"{avg_eng_v:.2f}%" if avg_eng_v is not None and not np.isnan(avg_eng_v) else "—")
+            c4.metric("Avg EMV", fmt_currency(avg_emv_v))
+            c5.metric("Total Posts (90d)", f"{int(total_posts_v):,}" if total_posts_v is not None and not np.isnan(total_posts_v) else "—")
+
+            st.markdown("---")
+            row1_l, row1_r = st.columns(2)
+
+            # Tier breakdown
+            with row1_l:
+                tier_counts = vdf["_tier"].value_counts().reindex(TIER_ORDER, fill_value=0).reset_index()
+                tier_counts.columns = ["Tier", "Count"]
+                fig = go.Figure(go.Bar(
+                    x=tier_counts["Tier"],
+                    y=tier_counts["Count"],
+                    marker_color=[TIER_COLORS.get(t, SHOPIFY_COLOR) for t in tier_counts["Tier"]],
+                    text=tier_counts["Count"],
+                    textposition="outside",
+                ))
+                apply_dark_layout(fig, "Follower Tier Breakdown")
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Platform split
+            with row1_r:
+                if platform_col:
+                    pc_v = vdf[platform_col].dropna().value_counts()
+                    if not pc_v.empty:
+                        fig = go.Figure(go.Pie(
+                            labels=pc_v.index,
+                            values=pc_v.values,
+                            hole=0.45,
+                            marker=dict(colors=PALETTE[:len(pc_v)]),
+                            textinfo="label+percent",
+                        ))
+                        apply_dark_layout(fig, "Platform Split")
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No platform data for this vertical.")
+                else:
+                    st.info("No Platform column mapped.")
+
+            # Gender split
+            if gender_col:
+                gc_v = vdf[gender_col].dropna().value_counts()
+                if not gc_v.empty:
+                    fig = go.Figure(go.Pie(
+                        labels=gc_v.index,
+                        values=gc_v.values,
+                        hole=0.45,
+                        marker=dict(colors=PALETTE[:len(gc_v)]),
+                        textinfo="label+percent",
+                    ))
+                    apply_dark_layout(fig, "Gender Split")
+                    st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No Gender column mapped.")
+
+            # Top 10 by EMV
+            st.markdown("#### Top 10 Influencers by Est. EMV")
+            show_cols = [c for c in [name_col, platform_col, followers_col, engagement_col, emv_col, status_col] if c]
+            top10 = vdf[show_cols].copy() if show_cols else vdf.copy()
+            if emv_col and emv_col in top10.columns:
+                top10 = top10.sort_values(emv_col, ascending=False)
+            top10 = top10.head(10)
+            # Format display
+            display_top10 = top10.copy()
+            if followers_col and followers_col in display_top10.columns:
+                display_top10[followers_col] = display_top10[followers_col].apply(fmt_number)
+            if engagement_col and engagement_col in display_top10.columns:
+                display_top10[engagement_col] = display_top10[engagement_col].apply(
+                    lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
+                )
+            if emv_col and emv_col in display_top10.columns:
+                display_top10[emv_col] = display_top10[emv_col].apply(fmt_currency)
+            st.dataframe(display_top10, hide_index=True, use_container_width=True)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 3 — FOLLOWER TIER ANALYSIS
+# ═════════════════════════════════════════════════════════════════════════════
+with tab3:
+    st.markdown("### Follower Tier Analysis")
+
+    # Summary cards per tier
+    tier_data = []
+    for tier in TIER_ORDER:
+        tdf = df[df["_tier"] == tier]
+        count_t = len(tdf)
+        avg_fol_t = tdf[followers_col].mean() if followers_col and count_t > 0 else None
+        avg_eng_t = tdf[engagement_col].mean() if engagement_col and count_t > 0 else None
+        avg_emv_t = tdf[emv_col].mean() if emv_col and count_t > 0 else None
+        if posts_col and count_t > 0:
+            post_rate = (tdf[posts_col].fillna(0) > 0).mean() * 100
+        else:
+            post_rate = None
+        top_vert = (
+            tdf[vertical_col].value_counts().index[0]
+            if vertical_col and count_t > 0 and not tdf[vertical_col].dropna().empty
+            else "—"
+        )
+        tier_data.append({
+            "Tier": tier,
+            "Count": count_t,
+            "Avg Followers": fmt_number(avg_fol_t),
+            "Avg Engagement Rate": f"{avg_eng_t:.2f}%" if avg_eng_t is not None and not np.isnan(avg_eng_t) else "—",
+            "Avg EMV": fmt_currency(avg_emv_t),
+            "Post Rate %": f"{post_rate:.1f}%" if post_rate is not None else "—",
+            "Top Vertical": top_vert,
+            "_avg_eng": avg_eng_t,
+        })
+
+    tier_summary_df = pd.DataFrame(tier_data)
+
+    # Metric cards
+    card_cols = st.columns(len(TIER_ORDER))
+    for i, row in tier_summary_df.iterrows():
+        with card_cols[i]:
+            st.metric(row["Tier"], f"{row['Count']:,}", help=f"Post Rate: {row['Post Rate %']}")
+
+    st.markdown("---")
+
+    col_a, col_b = st.columns(2)
+
+    # Stacked bar: vertical distribution per tier
+    with col_a:
+        if vertical_col:
+            pivot = (
+                df.groupby([vertical_col, "_tier"])
+                .size()
+                .unstack(fill_value=0)
+            )
+            # Reindex tiers
+            for t in TIER_ORDER:
+                if t not in pivot.columns:
+                    pivot[t] = 0
+            pivot = pivot[TIER_ORDER]
+            fig = go.Figure()
+            for idx, tier in enumerate(TIER_ORDER):
+                fig.add_trace(go.Bar(
+                    name=tier,
+                    x=pivot.index,
+                    y=pivot[tier],
+                    marker_color=TIER_COLORS.get(tier, PALETTE[idx]),
+                ))
+            fig.update_layout(barmode="stack", **CHART_LAYOUT, title="Vertical × Tier Distribution")
+            fig.update_xaxes(gridcolor="#1f2937", tickangle=-30)
+            fig.update_yaxes(gridcolor="#1f2937")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No Vertical column mapped.")
+
+    # Line chart: avg engagement by tier
+    with col_b:
+        eng_by_tier = tier_summary_df[["Tier", "_avg_eng"]].copy()
+        eng_by_tier = eng_by_tier[eng_by_tier["_avg_eng"].notna()]
+        if not eng_by_tier.empty:
+            fig = go.Figure(go.Scatter(
+                x=eng_by_tier["Tier"],
+                y=eng_by_tier["_avg_eng"],
+                mode="lines+markers",
+                line=dict(color=SHOPIFY_COLOR, width=3),
+                marker=dict(size=10, color=SHOPIFY_COLOR),
+                text=eng_by_tier["_avg_eng"].map(lambda x: f"{x:.2f}%"),
+                hovertemplate="%{x}: %{text}<extra></extra>",
+            ))
+            apply_dark_layout(fig, "Avg Engagement Rate by Tier (inverse relationship)")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No engagement data available.")
+
+    # Summary table
+    st.markdown("#### Tier Summary")
+    display_summary = tier_summary_df.drop(columns=["_avg_eng"])
+    st.dataframe(display_summary, hide_index=True, use_container_width=True)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 4 — OUTREACH EFFECTIVENESS
+# ═════════════════════════════════════════════════════════════════════════════
+with tab4:
+    st.markdown("### Outreach Effectiveness")
+
+    has_status = bool(status_col and status_col in df.columns)
+    has_outreach = bool(outreach_col and outreach_col in df.columns)
+    has_reply = bool(reply_col and reply_col in df.columns)
+    has_inbound = bool(inbound_col and inbound_col in df.columns)
+    has_vertical = bool(vertical_col and vertical_col in df.columns)
+
+    if not has_status and not has_outreach:
+        st.info("Map Status and/or Outreach Date columns to see outreach metrics.")
+    else:
+        # ── Funnel by vertical ────────────────────────────────────────────────
+        if has_status and has_vertical:
+            st.markdown("#### Pipeline Funnel by Vertical")
+
+            # Normalize status for comparison
+            status_series = df[status_col].astype(str).str.strip().str.lower()
+
+            def stage_count(vdf_local, stage):
+                s = vdf_local[status_col].astype(str).str.strip().str.lower()
+                if stage == "total":
+                    return len(vdf_local)
+                if stage == "outreached":
+                    return (~s.isin(["", "nan", "not contacted"])).sum()
+                if stage == "replied":
+                    return s.isin(["active", "pending", "posted", "completed"]).sum()
+                if stage == "active":
+                    return s.isin(["active", "posted", "completed"]).sum()
+                return 0
+
+            funnel_rows = []
+            for v in sorted(df[vertical_col].dropna().unique()):
+                vdf_local = df[df[vertical_col] == v]
+                total_f = stage_count(vdf_local, "total")
+                outreached = stage_count(vdf_local, "outreached")
+                replied = stage_count(vdf_local, "replied")
+                active = stage_count(vdf_local, "active")
+                funnel_rows.append({
+                    "Vertical": v,
+                    "Total": total_f,
+                    "Outreached": outreached,
+                    "Replied": replied,
+                    "Active/Posted": active,
+                    "Reply Rate": f"{(replied/outreached*100):.0f}%" if outreached > 0 else "—",
+                    "Active Rate": f"{(active/outreached*100):.0f}%" if outreached > 0 else "—",
+                })
+
+            funnel_df = pd.DataFrame(funnel_rows)
+            st.dataframe(funnel_df, hide_index=True, use_container_width=True)
+
+            # Funnel chart (grouped bars)
+            fig = go.Figure()
+            stages = ["Total", "Outreached", "Replied", "Active/Posted"]
+            stage_colors = ["#4a90d9", "#9b59b6", "#22c55e", "#f59e0b"]
+            for s, color in zip(stages, stage_colors):
+                fig.add_trace(go.Bar(
+                    name=s,
+                    x=funnel_df["Vertical"],
+                    y=funnel_df[s],
+                    marker_color=color,
+                ))
+            fig.update_layout(barmode="group", **CHART_LAYOUT, title="Pipeline Stages by Vertical")
+            fig.update_xaxes(gridcolor="#1f2937", tickangle=-30)
+            fig.update_yaxes(gridcolor="#1f2937")
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Reply rate by follower tier ───────────────────────────────────────
+        if has_status:
+            st.markdown("#### Reply Rate by Follower Tier")
+            status_norm = df[status_col].astype(str).str.strip().str.lower()
+            df["_replied"] = status_norm.isin(["active", "pending", "posted", "completed"]).astype(int)
+            df["_outreached"] = (~status_norm.isin(["", "nan", "not contacted"])).astype(int)
+
+            tier_reply = (
+                df[df["_outreached"] == 1]
+                .groupby("_tier")["_replied"]
+                .agg(["sum", "count"])
+                .reindex(TIER_ORDER)
+                .reset_index()
+            )
+            tier_reply.columns = ["Tier", "Replied", "Outreached"]
+            tier_reply["Reply Rate %"] = (tier_reply["Replied"] / tier_reply["Outreached"] * 100).round(1)
+            tier_reply = tier_reply.dropna(subset=["Reply Rate %"])
+
+            if not tier_reply.empty:
+                fig = go.Figure(go.Bar(
+                    x=tier_reply["Tier"],
+                    y=tier_reply["Reply Rate %"],
+                    marker_color=[TIER_COLORS.get(t, SHOPIFY_COLOR) for t in tier_reply["Tier"]],
+                    text=tier_reply["Reply Rate %"].map(lambda x: f"{x:.1f}%"),
+                    textposition="outside",
+                ))
+                apply_dark_layout(fig, "Reply Rate by Follower Tier")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Not enough data to calculate reply rates by tier.")
+
+        st.markdown("---")
+
+        # ── Time to reply ─────────────────────────────────────────────────────
+        if has_outreach and has_reply and "_days_to_reply" in df.columns:
+            st.markdown("#### Time to Reply")
+            valid_reply_df = df[df["_days_to_reply"].notna() & (df["_days_to_reply"] >= 0)]
+
+            col_dtr_l, col_dtr_r = st.columns(2)
+
+            with col_dtr_l:
+                if has_vertical and not valid_reply_df.empty:
+                    dtr_vert = (
+                        valid_reply_df.groupby(vertical_col)["_days_to_reply"]
+                        .mean()
+                        .reset_index()
+                        .sort_values("_days_to_reply")
+                    )
+                    dtr_vert.columns = ["Vertical", "Avg Days to Reply"]
+                    fig = go.Figure(go.Bar(
+                        x=dtr_vert["Avg Days to Reply"],
+                        y=dtr_vert["Vertical"],
+                        orientation="h",
+                        marker_color=SHOPIFY_COLOR,
+                        text=dtr_vert["Avg Days to Reply"].map(lambda x: f"{x:.1f}d"),
+                        textposition="outside",
+                    ))
+                    apply_dark_layout(fig, "Avg Days to Reply by Vertical")
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No reply date data available for verticals.")
+
+            with col_dtr_r:
+                if not valid_reply_df.empty:
+                    dtr_tier = (
+                        valid_reply_df.groupby("_tier")["_days_to_reply"]
+                        .mean()
+                        .reindex(TIER_ORDER)
+                        .reset_index()
+                        .dropna()
+                    )
+                    dtr_tier.columns = ["Tier", "Avg Days to Reply"]
+                    fig = go.Figure(go.Bar(
+                        x=dtr_tier["Tier"],
+                        y=dtr_tier["Avg Days to Reply"],
+                        marker_color=[TIER_COLORS.get(t, SHOPIFY_COLOR) for t in dtr_tier["Tier"]],
+                        text=dtr_tier["Avg Days to Reply"].map(lambda x: f"{x:.1f}d"),
+                        textposition="outside",
+                    ))
+                    apply_dark_layout(fig, "Avg Days to Reply by Tier")
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No reply date data available for tiers.")
+
+        st.markdown("---")
+
+        # ── Inbound vs Outreach ───────────────────────────────────────────────
+        if has_inbound and has_vertical:
+            st.markdown("#### Inbound vs. Outreach by Vertical")
+            inbound_v = (
+                df[[vertical_col, inbound_col]]
+                .dropna(subset=[vertical_col])
+                .copy()
+            )
+            inbound_v[inbound_col] = inbound_v[inbound_col].astype(str).str.strip().str.lower()
+            inbound_v["_is_inbound"] = inbound_v[inbound_col].isin(["yes", "y", "true", "1", "x"])
+            inbound_agg = (
+                inbound_v.groupby(vertical_col)["_is_inbound"]
+                .agg(["sum", "count"])
+                .reset_index()
+            )
+            inbound_agg.columns = ["Vertical", "Inbound", "Total"]
+            inbound_agg["Outreach"] = inbound_agg["Total"] - inbound_agg["Inbound"]
+            inbound_agg["Inbound %"] = (inbound_agg["Inbound"] / inbound_agg["Total"] * 100).round(1)
+
+            fig = go.Figure()
+            fig.add_trace(go.Bar(name="Inbound", x=inbound_agg["Vertical"], y=inbound_agg["Inbound"], marker_color="#22c55e"))
+            fig.add_trace(go.Bar(name="Outreach", x=inbound_agg["Vertical"], y=inbound_agg["Outreach"], marker_color="#4a90d9"))
+            fig.update_layout(barmode="stack", **CHART_LAYOUT, title="Inbound vs. Outreach by Vertical")
+            fig.update_xaxes(gridcolor="#1f2937", tickangle=-30)
+            fig.update_yaxes(gridcolor="#1f2937")
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Status breakdown table ────────────────────────────────────────────
+        if has_status and has_vertical:
+            st.markdown("#### Status Breakdown by Vertical")
+            status_pivot = (
+                df[[vertical_col, status_col]]
+                .dropna(subset=[vertical_col, status_col])
+                .groupby([vertical_col, status_col])
+                .size()
+                .unstack(fill_value=0)
+            )
+            if not status_pivot.empty:
+                st.dataframe(status_pivot, use_container_width=True)
+            else:
+                st.info("No status data to display.")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 5 — CAMPAIGN ANALYSIS
+# ═════════════════════════════════════════════════════════════════════════════
+with tab5:
+    st.markdown("### Campaign Analysis")
+
+    if not campaign_col or campaign_col not in df.columns:
+        st.info("No Campaign column mapped. Please check column mapping.")
+    else:
+        campaign_series = df[campaign_col].dropna()
+        if campaign_series.str.strip().replace("", pd.NA).dropna().empty:
+            st.info("Campaign column is empty.")
+        else:
+            # Filter out blank/null campaigns
+            cdf = df[df[campaign_col].notna() & (df[campaign_col].str.strip() != "")].copy()
+
+            # Count per campaign
+            camp_counts = cdf[campaign_col].value_counts().reset_index()
+            camp_counts.columns = ["Campaign", "Count"]
+
+            col_ca, col_cb = st.columns(2)
+
+            with col_ca:
+                fig = go.Figure(go.Bar(
+                    x=camp_counts["Count"],
+                    y=camp_counts["Campaign"],
+                    orientation="h",
+                    marker_color=SHOPIFY_COLOR,
+                    text=camp_counts["Count"],
+                    textposition="outside",
+                ))
+                apply_dark_layout(fig, "Influencers per Campaign")
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Vertical breakdown per campaign (stacked bar)
+            with col_cb:
+                if vertical_col and vertical_col in cdf.columns:
+                    camp_vert = (
+                        cdf[[campaign_col, vertical_col]]
+                        .dropna()
+                        .groupby([campaign_col, vertical_col])
+                        .size()
+                        .unstack(fill_value=0)
+                    )
+                    fig = go.Figure()
+                    for idx, vert in enumerate(camp_vert.columns):
+                        fig.add_trace(go.Bar(
+                            name=vert,
+                            x=camp_vert.index,
+                            y=camp_vert[vert],
+                            marker_color=PALETTE[idx % len(PALETTE)],
+                        ))
+                    fig.update_layout(barmode="stack", **CHART_LAYOUT, title="Vertical Breakdown per Campaign")
+                    fig.update_xaxes(gridcolor="#1f2937", tickangle=-30)
+                    fig.update_yaxes(gridcolor="#1f2937")
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No Vertical column mapped.")
+
+            st.markdown("---")
+
+            # Avg followers and engagement per campaign
+            st.markdown("#### Campaign Performance Metrics")
+            camp_stats = cdf.groupby(campaign_col).agg(
+                Count=(campaign_col, "count"),
+                **({followers_col: (followers_col, "mean")} if followers_col else {}),
+                **({engagement_col: (engagement_col, "mean")} if engagement_col else {}),
+                **({posts_col: (posts_col, lambda x: (x.fillna(0) > 0).mean() * 100)} if posts_col else {}),
+            ).reset_index()
+
+            # Rename for display
+            rename_map = {campaign_col: "Campaign", "Count": "Count"}
+            if followers_col:
+                rename_map[followers_col] = "Avg Followers"
+            if engagement_col:
+                rename_map[engagement_col] = "Avg Engagement Rate"
+            if posts_col:
+                rename_map[posts_col] = "Post Rate %"
+            camp_stats = camp_stats.rename(columns=rename_map)
+
+            # Format
+            if "Avg Followers" in camp_stats.columns:
+                camp_stats["Avg Followers"] = camp_stats["Avg Followers"].apply(fmt_number)
+            if "Avg Engagement Rate" in camp_stats.columns:
+                camp_stats["Avg Engagement Rate"] = camp_stats["Avg Engagement Rate"].apply(
+                    lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
+                )
+            if "Post Rate %" in camp_stats.columns:
+                camp_stats["Post Rate %"] = camp_stats["Post Rate %"].apply(
+                    lambda x: f"{x:.1f}%" if pd.notna(x) else "—"
+                )
+
+            st.dataframe(camp_stats, hide_index=True, use_container_width=True)
