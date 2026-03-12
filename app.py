@@ -112,7 +112,7 @@ COLUMN_HINTS = {
     "inbound":       ["inbound"],
     "campaign":      ["campaign"],
     "outreach_date": ["outreach date", "outreach_date", "date outreached"],
-    "reply_date":    ["reply date", "reply_date", "date replied"],
+    "reply_date":    ["response date", "reply date", "reply_date", "date replied", "responded"],
     "ig_handle":     ["clean ig handle", "ig handle", "instagram handle"],
     "tt_handle":     ["clean tt handle", "tiktok handle", "tt handle"],
 }
@@ -130,7 +130,7 @@ COLUMN_LABELS = {
     "inbound":       "Inbound?",
     "campaign":      "Campaign",
     "outreach_date": "Outreach Date",
-    "reply_date":    "Reply Date",
+    "reply_date":    "Response Date",
     "ig_handle":     "Clean IG Handle",
     "tt_handle":     "Clean TT Handle",
 }
