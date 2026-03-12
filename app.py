@@ -464,23 +464,16 @@ with tab2:
             else:
                 st.info("No Gender column mapped.")
 
-            # Top 10 by EMV
-            st.markdown("#### Top 10 Influencers by Est. EMV")
-            show_cols = [c for c in [name_col, platform_col, followers_col, engagement_col, emv_col, status_col] if c]
+            # Top influencers by followers
+            st.markdown("#### Top 10 Influencers by Followers")
+            show_cols = [c for c in [name_col, platform_col, followers_col, status_col] if c]
             top10 = vdf[show_cols].copy() if show_cols else vdf.copy()
-            if emv_col and emv_col in top10.columns:
-                top10 = top10.sort_values(emv_col, ascending=False)
+            if followers_col and followers_col in top10.columns:
+                top10 = top10.sort_values(followers_col, ascending=False)
             top10 = top10.head(10)
-            # Format display
             display_top10 = top10.copy()
             if followers_col and followers_col in display_top10.columns:
                 display_top10[followers_col] = display_top10[followers_col].apply(fmt_number)
-            if engagement_col and engagement_col in display_top10.columns:
-                display_top10[engagement_col] = display_top10[engagement_col].apply(
-                    lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
-                )
-            if emv_col and emv_col in display_top10.columns:
-                display_top10[emv_col] = display_top10[emv_col].apply(fmt_currency)
             st.dataframe(display_top10, hide_index=True, use_container_width=True)
 
 
@@ -490,66 +483,131 @@ with tab2:
 with tab3:
     st.markdown("### Follower Tier Analysis")
 
-    # Summary cards per tier
-    tier_data = []
-    for tier in TIER_ORDER:
-        tdf = df[df["_tier"] == tier]
+    # Tier filter
+    available_tiers = [t for t in TIER_ORDER if t in df["_tier"].values]
+    selected_tiers = st.multiselect(
+        "Filter by Tier", options=available_tiers, default=available_tiers, key="tier_filter"
+    )
+    tier_df = df[df["_tier"].isin(selected_tiers)] if selected_tiers else df.copy()
+
+    has_outreach_col = bool(outreach_col and outreach_col in df.columns)
+    has_reply_col = bool(reply_col and reply_col in df.columns)
+    has_status_col = bool(status_col and status_col in df.columns)
+
+    # Helper: compute rates for a sub-dataframe
+    def compute_tier_rates(tdf):
         count_t = len(tdf)
         avg_fol_t = tdf[followers_col].mean() if followers_col and count_t > 0 else None
-        avg_eng_t = tdf[engagement_col].mean() if engagement_col and count_t > 0 else None
-        avg_emv_t = tdf[emv_col].mean() if emv_col and count_t > 0 else None
-        if posts_col and count_t > 0:
-            post_rate = (tdf[posts_col].fillna(0) > 0).mean() * 100
-        else:
-            post_rate = None
         top_vert = (
             tdf[vertical_col].value_counts().index[0]
             if vertical_col and count_t > 0 and not tdf[vertical_col].dropna().empty
             else "—"
         )
-        tier_data.append({
-            "Tier": tier,
+        # Outreached = has an outreach date
+        outreached = tdf[outreach_col].notna().sum() if has_outreach_col else None
+        # Responded = has a response date
+        responded = tdf[reply_col].notna().sum() if has_reply_col else None
+        # Posted = POSTED status
+        if has_status_col:
+            s = tdf[status_col].astype(str).str.strip().str.lower()
+            posted = s.isin(STATUS_POSTED).sum()
+        else:
+            posted = None
+
+        resp_rate = (responded / outreached * 100) if (outreached and outreached > 0) else None
+        post_rate = (posted / responded * 100) if (responded and responded > 0) else None
+
+        return {
             "Count": count_t,
             "Avg Followers": fmt_number(avg_fol_t),
-            "Avg Engagement Rate": f"{avg_eng_t:.2f}%" if avg_eng_t is not None and not np.isnan(avg_eng_t) else "—",
-            "Avg EMV": fmt_currency(avg_emv_t),
-            "Post Rate %": f"{post_rate:.1f}%" if post_rate is not None else "—",
+            "Outreached": int(outreached) if outreached is not None else "—",
+            "Responded": int(responded) if responded is not None else "—",
+            "Posted": int(posted) if posted is not None else "—",
+            "Response Rate": f"{resp_rate:.1f}%" if resp_rate is not None else "—",
+            "Post Rate\n(of responded)": f"{post_rate:.1f}%" if post_rate is not None else "—",
             "Top Vertical": top_vert,
-            "_avg_eng": avg_eng_t,
-        })
+            "_resp_rate": resp_rate,
+            "_post_rate": post_rate,
+        }
 
-    tier_summary_df = pd.DataFrame(tier_data)
+    # Build summary table
+    tier_data = []
+    for tier in TIER_ORDER:
+        if tier not in selected_tiers:
+            continue
+        tdf = tier_df[tier_df["_tier"] == tier]
+        row = {"Tier": tier, **compute_tier_rates(tdf)}
+        tier_data.append(row)
+
+    tier_summary_df = pd.DataFrame(tier_data) if tier_data else pd.DataFrame()
 
     # Metric cards
-    card_cols = st.columns(len(TIER_ORDER))
-    for i, row in tier_summary_df.iterrows():
-        with card_cols[i]:
-            st.metric(row["Tier"], f"{row['Count']:,}", help=f"Post Rate: {row['Post Rate %']}")
+    if not tier_summary_df.empty:
+        card_cols = st.columns(len(tier_summary_df))
+        for i, (_, row) in enumerate(tier_summary_df.iterrows()):
+            with card_cols[i]:
+                st.metric(
+                    row["Tier"],
+                    f"{row['Count']:,}",
+                    help=f"Response Rate: {row['Response Rate']} | Post Rate: {row['Post Rate\n(of responded)']}"
+                )
 
     st.markdown("---")
 
     col_a, col_b = st.columns(2)
 
-    # Stacked bar: vertical distribution per tier
+    # Response rate by tier (bar)
     with col_a:
-        if vertical_col:
+        if not tier_summary_df.empty:
+            rate_chart = tier_summary_df[["Tier", "_resp_rate", "_post_rate"]].dropna(subset=["_resp_rate"])
+            if not rate_chart.empty:
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    name="Response Rate",
+                    x=rate_chart["Tier"],
+                    y=rate_chart["_resp_rate"],
+                    marker_color="#4a90d9",
+                    text=rate_chart["_resp_rate"].map(lambda x: f"{x:.1f}%"),
+                    textposition="outside",
+                ))
+                if "_post_rate" in rate_chart.columns:
+                    rate_chart2 = tier_summary_df[["Tier", "_post_rate"]].dropna(subset=["_post_rate"])
+                    fig.add_trace(go.Bar(
+                        name="Post Rate (of responded)",
+                        x=rate_chart2["Tier"],
+                        y=rate_chart2["_post_rate"],
+                        marker_color="#22c55e",
+                        text=rate_chart2["_post_rate"].map(lambda x: f"{x:.1f}%"),
+                        textposition="outside",
+                    ))
+                fig.update_layout(barmode="group", **CHART_LAYOUT, title="Response & Post Rate by Tier")
+                fig.update_xaxes(gridcolor="#1f2937")
+                fig.update_yaxes(gridcolor="#1f2937", ticksuffix="%")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No outreach date data available.")
+        else:
+            st.info("No tiers selected.")
+
+    # Vertical distribution across selected tiers (stacked bar)
+    with col_b:
+        if vertical_col and not tier_df.empty:
             pivot = (
-                df.groupby([vertical_col, "_tier"])
+                tier_df.groupby([vertical_col, "_tier"])
                 .size()
                 .unstack(fill_value=0)
             )
-            # Reindex tiers
-            for t in TIER_ORDER:
+            for t in selected_tiers:
                 if t not in pivot.columns:
                     pivot[t] = 0
-            pivot = pivot[TIER_ORDER]
+            pivot = pivot[[t for t in TIER_ORDER if t in pivot.columns]]
             fig = go.Figure()
-            for idx, tier in enumerate(TIER_ORDER):
+            for tier in pivot.columns:
                 fig.add_trace(go.Bar(
                     name=tier,
                     x=pivot.index,
                     y=pivot[tier],
-                    marker_color=TIER_COLORS.get(tier, PALETTE[idx]),
+                    marker_color=TIER_COLORS.get(tier, SHOPIFY_COLOR),
                 ))
             fig.update_layout(barmode="stack", **CHART_LAYOUT, title="Vertical × Tier Distribution")
             fig.update_xaxes(gridcolor="#1f2937", tickangle=-30)
@@ -558,29 +616,11 @@ with tab3:
         else:
             st.info("No Vertical column mapped.")
 
-    # Line chart: avg engagement by tier
-    with col_b:
-        eng_by_tier = tier_summary_df[["Tier", "_avg_eng"]].copy()
-        eng_by_tier = eng_by_tier[eng_by_tier["_avg_eng"].notna()]
-        if not eng_by_tier.empty:
-            fig = go.Figure(go.Scatter(
-                x=eng_by_tier["Tier"],
-                y=eng_by_tier["_avg_eng"],
-                mode="lines+markers",
-                line=dict(color=SHOPIFY_COLOR, width=3),
-                marker=dict(size=10, color=SHOPIFY_COLOR),
-                text=eng_by_tier["_avg_eng"].map(lambda x: f"{x:.2f}%"),
-                hovertemplate="%{x}: %{text}<extra></extra>",
-            ))
-            apply_dark_layout(fig, "Avg Engagement Rate by Tier (inverse relationship)")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No engagement data available.")
-
     # Summary table
-    st.markdown("#### Tier Summary")
-    display_summary = tier_summary_df.drop(columns=["_avg_eng"])
-    st.dataframe(display_summary, hide_index=True, use_container_width=True)
+    if not tier_summary_df.empty:
+        st.markdown("#### Tier Summary")
+        display_summary = tier_summary_df.drop(columns=["_resp_rate", "_post_rate"], errors="ignore")
+        st.dataframe(display_summary, hide_index=True, use_container_width=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
