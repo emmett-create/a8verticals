@@ -115,6 +115,8 @@ COLUMN_HINTS = {
     "reply_date":    ["response date", "reply date", "reply_date", "date replied", "responded"],
     "ig_handle":     ["clean ig handle", "ig handle", "instagram handle"],
     "tt_handle":     ["clean tt handle", "tiktok handle", "tt handle"],
+    "ig_link":       ["ig link", "instagram link", "instagram url"],
+    "tt_link":       ["tiktok link", "tiktok url", "tt link"],
 }
 
 COLUMN_LABELS = {
@@ -133,6 +135,8 @@ COLUMN_LABELS = {
     "reply_date":    "Response Date",
     "ig_handle":     "Clean IG Handle",
     "tt_handle":     "Clean TT Handle",
+    "ig_link":       "IG Link",
+    "tt_link":       "TikTok Link",
 }
 
 
@@ -292,6 +296,8 @@ campaign_col = get_col("campaign")
 name_col = get_col("name")
 ig_col = get_col("ig_handle")
 tt_col = get_col("tt_handle")
+ig_link_col = get_col("ig_link")
+tt_link_col = get_col("tt_link")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -1048,8 +1054,6 @@ with tab6:
     # ── Build display table ────────────────────────────────────────────────────
     display_cols_map = {}
     if name_col:        display_cols_map["Name"] = name_col
-    if ig_col:          display_cols_map["IG Handle"] = ig_col
-    if tt_col:          display_cols_map["TT Handle"] = tt_col
     if platform_col:    display_cols_map["Platform"] = platform_col
     if vertical_col:    display_cols_map["Vertical"] = vertical_col
     if followers_col:   display_cols_map["Followers"] = followers_col
@@ -1068,20 +1072,46 @@ with tab6:
     ).values
     table_df["Reliability Score"] = fdf["_score"].apply(lambda x: f"{int(x)}/100").values
 
-    # Format followers
     if "Followers" in table_df.columns:
         table_df["Followers"] = fdf[followers_col].apply(fmt_number).values
 
-    # Sort by reliability score descending
-    table_df = table_df.sort_values("Reliability Score", ascending=False)
+    table_df = table_df.sort_values("Reliability Score", ascending=False).reset_index(drop=True)
 
-    st.dataframe(table_df, hide_index=True, use_container_width=True)
+    # Add select checkbox as first column
+    table_df.insert(0, "Select", False)
 
-    # ── Export ────────────────────────────────────────────────────────────────
-    csv_export = table_df.to_csv(index=False)
-    st.download_button(
-        label="Export filtered list as CSV",
-        data=csv_export,
-        file_name="creator_roster_filtered.csv",
-        mime="text/csv",
+    st.markdown("Check creators you want to export, then click **Download Selected**.")
+    edited = st.data_editor(
+        table_df,
+        hide_index=True,
+        use_container_width=True,
+        column_config={"Select": st.column_config.CheckboxColumn("Select", default=False)},
+        key="roster_editor",
     )
+
+    selected_rows = edited[edited["Select"] == True]
+    st.markdown(f"**{len(selected_rows)}** creator(s) selected")
+
+    # ── Export: master list layout (A=Owner, B=Name, C=IG Link, D=Clean IG Handle, E=TikTok Link, F=Clean TT Handle) ──
+    if len(selected_rows) > 0:
+        # Get original rows from fdf matching selected names
+        sel_mask = fdf.reset_index(drop=True).index.isin(selected_rows.index)
+        sel_fdf = fdf.reset_index(drop=True)[sel_mask]
+
+        export = pd.DataFrame({
+            "Owner":            "",
+            "Name":             sel_fdf[name_col].values if name_col else "",
+            "IG Link":          sel_fdf[ig_link_col].values if ig_link_col and ig_link_col in sel_fdf.columns else "",
+            "Clean IG Handle":  sel_fdf[ig_col].values if ig_col and ig_col in sel_fdf.columns else "",
+            "TikTok Link":      sel_fdf[tt_link_col].values if tt_link_col and tt_link_col in sel_fdf.columns else "",
+            "Clean TT Handle":  sel_fdf[tt_col].values if tt_col and tt_col in sel_fdf.columns else "",
+        })
+
+        st.download_button(
+            label=f"Download {len(selected_rows)} selected creator(s)",
+            data=export.to_csv(index=False),
+            file_name="creators_for_master_list.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("Select creators above to enable download.")
