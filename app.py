@@ -35,6 +35,33 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ── Status classifications (matches Agency 8 master list dropdowns) ───────────
+# Not yet outreached
+STATUS_NO_OUTREACH = {"no outreach yet", ""}
+
+# Outreached but not yet replied/active
+STATUS_OUTREACHED_ONLY = {
+    "initial outreach", "follow up #1", "emailed", "follow up on email",
+    "sent form", "followed up to fill", "follow up to fill #2",
+}
+
+# Replied / actively progressing through the gifting pipeline
+STATUS_ACTIVE = {
+    "order confirmed", "sent guides", "shipped", "delivered",
+    "follow up on delivered", "follow up to post", "follow up to post #2",
+    "follow up after posted",
+}
+
+# Actually posted
+STATUS_POSTED = {"posted"}
+
+# Dead / declined
+STATUS_DEAD = {"not interested", "wants paid", "abroad", "existing"}
+
+# Combined sets for funnel stages
+STATUS_ALL_OUTREACHED = STATUS_OUTREACHED_ONLY | STATUS_ACTIVE | STATUS_POSTED | STATUS_DEAD
+STATUS_ALL_ACTIVE_PLUS = STATUS_ACTIVE | STATUS_POSTED
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 SHOPIFY_COLOR = "#9b59b6"
 PALETTE = ["#4a90d9", "#9b59b6", "#22c55e", "#f59e0b", "#ef4444", "#06b6d4", "#ec4899", "#84cc16"]
@@ -582,11 +609,11 @@ with tab4:
                 if stage == "total":
                     return len(vdf_local)
                 if stage == "outreached":
-                    return (~s.isin(["", "nan", "not contacted"])).sum()
-                if stage == "replied":
-                    return s.isin(["active", "pending", "posted", "completed"]).sum()
+                    return s.isin(STATUS_ALL_OUTREACHED).sum()
                 if stage == "active":
-                    return s.isin(["active", "posted", "completed"]).sum()
+                    return s.isin(STATUS_ALL_ACTIVE_PLUS).sum()
+                if stage == "posted":
+                    return s.isin(STATUS_POSTED).sum()
                 return 0
 
             funnel_rows = []
@@ -594,16 +621,16 @@ with tab4:
                 vdf_local = df[df[vertical_col] == v]
                 total_f = stage_count(vdf_local, "total")
                 outreached = stage_count(vdf_local, "outreached")
-                replied = stage_count(vdf_local, "replied")
                 active = stage_count(vdf_local, "active")
+                posted = stage_count(vdf_local, "posted")
                 funnel_rows.append({
                     "Vertical": v,
                     "Total": total_f,
                     "Outreached": outreached,
-                    "Replied": replied,
-                    "Active/Posted": active,
-                    "Reply Rate": f"{(replied/outreached*100):.0f}%" if outreached > 0 else "—",
-                    "Active Rate": f"{(active/outreached*100):.0f}%" if outreached > 0 else "—",
+                    "Active/Gifted": active,
+                    "Posted": posted,
+                    "Outreach Rate": f"{(outreached/total_f*100):.0f}%" if total_f > 0 else "—",
+                    "Post Rate": f"{(posted/outreached*100):.0f}%" if outreached > 0 else "—",
                 })
 
             funnel_df = pd.DataFrame(funnel_rows)
@@ -611,7 +638,7 @@ with tab4:
 
             # Funnel chart (grouped bars)
             fig = go.Figure()
-            stages = ["Total", "Outreached", "Replied", "Active/Posted"]
+            stages = ["Total", "Outreached", "Active/Gifted", "Posted"]
             stage_colors = ["#4a90d9", "#9b59b6", "#22c55e", "#f59e0b"]
             for s, color in zip(stages, stage_colors):
                 fig.add_trace(go.Bar(
@@ -629,10 +656,10 @@ with tab4:
 
         # ── Reply rate by follower tier ───────────────────────────────────────
         if has_status:
-            st.markdown("#### Reply Rate by Follower Tier")
+            st.markdown("#### Posted Rate by Follower Tier")
             status_norm = df[status_col].astype(str).str.strip().str.lower()
-            df["_replied"] = status_norm.isin(["active", "pending", "posted", "completed"]).astype(int)
-            df["_outreached"] = (~status_norm.isin(["", "nan", "not contacted"])).astype(int)
+            df["_replied"] = status_norm.isin(STATUS_POSTED).astype(int)
+            df["_outreached"] = status_norm.isin(STATUS_ALL_OUTREACHED).astype(int)
 
             tier_reply = (
                 df[df["_outreached"] == 1]
@@ -641,19 +668,19 @@ with tab4:
                 .reindex(TIER_ORDER)
                 .reset_index()
             )
-            tier_reply.columns = ["Tier", "Replied", "Outreached"]
-            tier_reply["Reply Rate %"] = (tier_reply["Replied"] / tier_reply["Outreached"] * 100).round(1)
-            tier_reply = tier_reply.dropna(subset=["Reply Rate %"])
+            tier_reply.columns = ["Tier", "Posted", "Outreached"]
+            tier_reply["Post Rate %"] = (tier_reply["Posted"] / tier_reply["Outreached"] * 100).round(1)
+            tier_reply = tier_reply.dropna(subset=["Post Rate %"])
 
             if not tier_reply.empty:
                 fig = go.Figure(go.Bar(
                     x=tier_reply["Tier"],
-                    y=tier_reply["Reply Rate %"],
+                    y=tier_reply["Post Rate %"],
                     marker_color=[TIER_COLORS.get(t, SHOPIFY_COLOR) for t in tier_reply["Tier"]],
-                    text=tier_reply["Reply Rate %"].map(lambda x: f"{x:.1f}%"),
+                    text=tier_reply["Post Rate %"].map(lambda x: f"{x:.1f}%"),
                     textposition="outside",
                 ))
-                apply_dark_layout(fig, "Reply Rate by Follower Tier")
+                apply_dark_layout(fig, "Post Rate by Follower Tier")
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("Not enough data to calculate reply rates by tier.")
