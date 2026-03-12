@@ -290,14 +290,17 @@ status_col = get_col("status")
 inbound_col = get_col("inbound")
 campaign_col = get_col("campaign")
 name_col = get_col("name")
+ig_col = get_col("ig_handle")
+tt_col = get_col("tt_handle")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "Overview",
     "Vertical Deep Dive",
     "Follower Tier Analysis",
     "Outreach Effectiveness",
     "Campaign Analysis",
+    "Creator Roster",
 ])
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -922,3 +925,163 @@ with tab5:
                 )
 
             st.dataframe(camp_stats, hide_index=True, use_container_width=True)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 6 — CREATOR ROSTER
+# ═════════════════════════════════════════════════════════════════════════════
+with tab6:
+    st.markdown("### Creator Roster")
+    st.markdown(
+        "<p style='color:#888;margin-top:-8px;'>Use filters to find creators worth pulling for a new campaign. "
+        "Reliability Score rewards fast responses and posting history.</p>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Build per-creator record ───────────────────────────────────────────────
+    roster = df.copy()
+
+    # Responded = has a date in reply_col
+    if reply_col and reply_col in roster.columns:
+        roster["_responded"] = roster[reply_col].notna().astype(int)
+    else:
+        roster["_responded"] = 0
+
+    # Outreached = has a date in outreach_col
+    if outreach_col and outreach_col in roster.columns:
+        roster["_outreached"] = roster[outreach_col].notna().astype(int)
+    else:
+        roster["_outreached"] = 0
+
+    # Posted = POSTED status
+    if status_col and status_col in roster.columns:
+        s_norm = roster[status_col].astype(str).str.strip().str.lower()
+        roster["_posted"] = s_norm.isin(STATUS_POSTED).astype(int)
+    else:
+        roster["_posted"] = 0
+
+    # Days to respond
+    if "_days_to_reply" in roster.columns:
+        roster["_dtr"] = pd.to_numeric(roster["_days_to_reply"], errors="coerce")
+    else:
+        roster["_dtr"] = pd.NA
+
+    # ── Reliability Score (0–100) ──────────────────────────────────────────────
+    # +40 if responded, +40 if posted, +20 bonus if response time ≤ 7 days
+    roster["_score"] = (
+        roster["_responded"] * 40
+        + roster["_posted"] * 40
+        + roster["_dtr"].apply(lambda d: 20 if pd.notna(d) and d <= 7 else (10 if pd.notna(d) and d <= 14 else 0))
+    )
+
+    # ── Filters ───────────────────────────────────────────────────────────────
+    f1, f2, f3, f4 = st.columns(4)
+
+    with f1:
+        vert_options = ["All"] + sorted(roster[vertical_col].dropna().unique().tolist()) if vertical_col else ["All"]
+        sel_vert = st.selectbox("Vertical", vert_options, key="roster_vert")
+
+    with f2:
+        tier_options = ["All"] + [t for t in TIER_ORDER if t in roster["_tier"].values]
+        sel_tier = st.selectbox("Follower Tier", tier_options, key="roster_tier")
+
+    with f3:
+        plat_options = ["All"] + sorted(roster[platform_col].dropna().unique().tolist()) if platform_col else ["All"]
+        sel_plat = st.selectbox("Platform", plat_options, key="roster_plat")
+
+    with f4:
+        reliability_filter = st.selectbox(
+            "Reliability",
+            ["All", "High (80–100)", "Medium (40–79)", "Low (0–39)"],
+            key="roster_rel",
+        )
+
+    # Second row of filters
+    f5, f6, f7 = st.columns(3)
+    with f5:
+        posted_only = st.checkbox("Posted before", key="roster_posted")
+    with f6:
+        responded_only = st.checkbox("Responded before", key="roster_responded")
+    with f7:
+        min_followers = st.number_input("Min followers", min_value=0, value=0, step=1000, key="roster_minfol")
+
+    # Apply filters
+    fdf = roster.copy()
+    if sel_vert != "All" and vertical_col:
+        fdf = fdf[fdf[vertical_col] == sel_vert]
+    if sel_tier != "All":
+        fdf = fdf[fdf["_tier"] == sel_tier]
+    if sel_plat != "All" and platform_col:
+        fdf = fdf[fdf[platform_col] == sel_plat]
+    if reliability_filter == "High (80–100)":
+        fdf = fdf[fdf["_score"] >= 80]
+    elif reliability_filter == "Medium (40–79)":
+        fdf = fdf[(fdf["_score"] >= 40) & (fdf["_score"] < 80)]
+    elif reliability_filter == "Low (0–39)":
+        fdf = fdf[fdf["_score"] < 40]
+    if posted_only:
+        fdf = fdf[fdf["_posted"] == 1]
+    if responded_only:
+        fdf = fdf[fdf["_responded"] == 1]
+    if min_followers > 0 and followers_col:
+        fdf = fdf[fdf[followers_col].fillna(0) >= min_followers]
+
+    st.markdown(f"**{len(fdf):,} creators** match your filters")
+
+    # ── Summary metrics ───────────────────────────────────────────────────────
+    m1, m2, m3, m4 = st.columns(4)
+    total_f = len(fdf)
+    outreached_f = int(fdf["_outreached"].sum())
+    responded_f = int(fdf["_responded"].sum())
+    posted_f = int(fdf["_posted"].sum())
+    resp_rate_f = (responded_f / outreached_f * 100) if outreached_f > 0 else 0
+    post_rate_f = (posted_f / responded_f * 100) if responded_f > 0 else 0
+    avg_dtr_f = fdf["_dtr"][fdf["_dtr"].notna() & (fdf["_dtr"] >= 0)].mean()
+
+    m1.metric("Response Rate", f"{resp_rate_f:.1f}%", help=f"{responded_f} responded / {outreached_f} outreached")
+    m2.metric("Post Rate", f"{post_rate_f:.1f}%", help=f"{posted_f} posted / {responded_f} responded")
+    m3.metric("Avg Response Time", f"{avg_dtr_f:.1f}d" if pd.notna(avg_dtr_f) else "—")
+    m4.metric("Avg Reliability Score", f"{fdf['_score'].mean():.0f}/100" if total_f > 0 else "—")
+
+    st.markdown("---")
+
+    # ── Build display table ────────────────────────────────────────────────────
+    display_cols_map = {}
+    if name_col:        display_cols_map["Name"] = name_col
+    if ig_col:          display_cols_map["IG Handle"] = ig_col
+    if tt_col:          display_cols_map["TT Handle"] = tt_col
+    if platform_col:    display_cols_map["Platform"] = platform_col
+    if vertical_col:    display_cols_map["Vertical"] = vertical_col
+    if followers_col:   display_cols_map["Followers"] = followers_col
+    if campaign_col:    display_cols_map["Campaign"] = campaign_col
+    if status_col:      display_cols_map["Status"] = status_col
+
+    table_df = fdf[[c for c in display_cols_map.values() if c in fdf.columns]].copy()
+    table_df.columns = [k for k, v in display_cols_map.items() if v in fdf.columns]
+
+    # Add computed columns
+    table_df["Tier"] = fdf["_tier"].values
+    table_df["Responded"] = fdf["_responded"].map({1: "Yes", 0: "No"}).values
+    table_df["Posted"] = fdf["_posted"].map({1: "Yes", 0: "No"}).values
+    table_df["Days to Respond"] = fdf["_dtr"].apply(
+        lambda x: f"{int(x)}d" if pd.notna(x) and x >= 0 else "—"
+    ).values
+    table_df["Reliability Score"] = fdf["_score"].apply(lambda x: f"{int(x)}/100").values
+
+    # Format followers
+    if "Followers" in table_df.columns:
+        table_df["Followers"] = fdf[followers_col].apply(fmt_number).values
+
+    # Sort by reliability score descending
+    table_df = table_df.sort_values("Reliability Score", ascending=False)
+
+    st.dataframe(table_df, hide_index=True, use_container_width=True)
+
+    # ── Export ────────────────────────────────────────────────────────────────
+    csv_export = table_df.to_csv(index=False)
+    st.download_button(
+        label="Export filtered list as CSV",
+        data=csv_export,
+        file_name="creator_roster_filtered.csv",
+        mime="text/csv",
+    )
