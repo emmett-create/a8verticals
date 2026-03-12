@@ -229,9 +229,10 @@ with st.expander("Column Mapping (auto-detected — adjust if needed)", expanded
                 key=f"map_{field}",
             )
 
-analyze = st.button("Analyze", type="primary")
+if st.button("Analyze", type="primary"):
+    st.session_state["analyzed"] = True
 
-if not analyze:
+if not st.session_state.get("analyzed"):
     st.info("Click **Analyze** to generate the report.")
     st.stop()
 
