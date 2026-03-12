@@ -1052,8 +1052,13 @@ with tab6:
     st.markdown("---")
 
     # ── Build display table ────────────────────────────────────────────────────
+    # Reset fdf index so positional index is reliable
+    fdf = fdf.reset_index(drop=True)
+
     display_cols_map = {}
     if name_col:        display_cols_map["Name"] = name_col
+    if ig_col:          display_cols_map["IG Handle"] = ig_col
+    if tt_col:          display_cols_map["TT Handle"] = tt_col
     if platform_col:    display_cols_map["Platform"] = platform_col
     if vertical_col:    display_cols_map["Vertical"] = vertical_col
     if followers_col:   display_cols_map["Followers"] = followers_col
@@ -1063,7 +1068,6 @@ with tab6:
     table_df = fdf[[c for c in display_cols_map.values() if c in fdf.columns]].copy()
     table_df.columns = [k for k, v in display_cols_map.items() if v in fdf.columns]
 
-    # Add computed columns
     table_df["Tier"] = fdf["_tier"].values
     table_df["Responded"] = fdf["_responded"].map({1: "Yes", 0: "No"}).values
     table_df["Posted"] = fdf["_posted"].map({1: "Yes", 0: "No"}).values
@@ -1075,41 +1079,40 @@ with tab6:
     if "Followers" in table_df.columns:
         table_df["Followers"] = fdf[followers_col].apply(fmt_number).values
 
+    # Sort and keep a map back to fdf positions
+    table_df["_fdf_idx"] = fdf.index
     table_df = table_df.sort_values("Reliability Score", ascending=False).reset_index(drop=True)
-
-    # Add select checkbox as first column
     table_df.insert(0, "Select", False)
 
     st.markdown("Check creators you want to export, then click **Download Selected**.")
     edited = st.data_editor(
-        table_df,
+        table_df.drop(columns=["_fdf_idx"]),
         hide_index=True,
         use_container_width=True,
         column_config={"Select": st.column_config.CheckboxColumn("Select", default=False)},
         key="roster_editor",
     )
 
-    selected_rows = edited[edited["Select"] == True]
-    st.markdown(f"**{len(selected_rows)}** creator(s) selected")
+    selected_idx = edited[edited["Select"] == True].index.tolist()
+    selected_fdf_idx = table_df.loc[selected_idx, "_fdf_idx"].tolist()
+    sel_fdf = fdf.loc[selected_fdf_idx]
 
-    # ── Export: master list layout (A=Owner, B=Name, C=IG Link, D=Clean IG Handle, E=TikTok Link, F=Clean TT Handle) ──
-    if len(selected_rows) > 0:
-        # Get original rows from fdf matching selected names
-        sel_mask = fdf.reset_index(drop=True).index.isin(selected_rows.index)
-        sel_fdf = fdf.reset_index(drop=True)[sel_mask]
+    st.markdown(f"**{len(sel_fdf)}** creator(s) selected")
 
+    # ── Export: columns B–F matching master list, no header row ───────────────
+    if len(sel_fdf) > 0:
         export = pd.DataFrame({
-            "Owner":            "",
-            "Name":             sel_fdf[name_col].values if name_col else "",
-            "IG Link":          sel_fdf[ig_link_col].values if ig_link_col and ig_link_col in sel_fdf.columns else "",
-            "Clean IG Handle":  sel_fdf[ig_col].values if ig_col and ig_col in sel_fdf.columns else "",
-            "TikTok Link":      sel_fdf[tt_link_col].values if tt_link_col and tt_link_col in sel_fdf.columns else "",
-            "Clean TT Handle":  sel_fdf[tt_col].values if tt_col and tt_col in sel_fdf.columns else "",
+            "Owner":           "",
+            "Name":            sel_fdf[name_col].values if name_col else "",
+            "IG Link":         sel_fdf[ig_link_col].values if ig_link_col and ig_link_col in sel_fdf.columns else "",
+            "Clean IG Handle": sel_fdf[ig_col].values if ig_col and ig_col in sel_fdf.columns else "",
+            "TikTok Link":     sel_fdf[tt_link_col].values if tt_link_col and tt_link_col in sel_fdf.columns else "",
+            "Clean TT Handle": sel_fdf[tt_col].values if tt_col and tt_col in sel_fdf.columns else "",
         })
 
         st.download_button(
-            label=f"Download {len(selected_rows)} selected creator(s)",
-            data=export.to_csv(index=False),
+            label=f"Download {len(sel_fdf)} selected creator(s)",
+            data=export.to_csv(index=False, header=False),
             file_name="creators_for_master_list.csv",
             mime="text/csv",
         )
