@@ -514,17 +514,20 @@ with tab3:
         else:
             posted = None
 
-        resp_rate = (int(responded) / int(outreached) * 100) if (outreached is not None and int(outreached) > 0) else None
-        post_rate = (int(posted) / int(responded) * 100) if (responded is not None and int(responded) > 0) else None
+        outreached_n = int(outreached) if outreached is not None else 0
+        responded_n = int(responded) if responded is not None else 0
+        posted_n = int(posted) if posted is not None else 0
+        resp_rate = (responded_n / outreached_n * 100) if outreached_n > 0 else None
+        post_rate = (posted_n / responded_n * 100) if responded_n > 0 else None
 
         return {
             "Count": count_t,
             "Avg Followers": fmt_number(avg_fol_t),
-            "Outreached": int(outreached) if outreached is not None else "—",
-            "Responded": int(responded) if responded is not None else "—",
-            "Posted": int(posted) if posted is not None else "—",
+            "Outreached": outreached_n if has_outreach_col else "—",
+            "Responded": responded_n if has_reply_col else "—",
+            "Posted": posted_n if has_status_col else "—",
             "Response Rate": f"{resp_rate:.1f}%" if resp_rate is not None else "—",
-            "Post Rate\n(of responded)": f"{post_rate:.1f}%" if post_rate is not None else "—",
+            "Post Rate (of responded)": f"{post_rate:.1f}%" if post_rate is not None else "—",
             "Top Vertical": top_vert,
             "_resp_rate": resp_rate,
             "_post_rate": post_rate,
@@ -549,7 +552,7 @@ with tab3:
                 st.metric(
                     row["Tier"],
                     f"{row['Count']:,}",
-                    help=f"Response Rate: {row['Response Rate']} | Post Rate: {row['Post Rate\n(of responded)']}"
+                    help=f"Response Rate: {row['Response Rate']} | Post Rate: {row['Post Rate (of responded)']}"
                 )
 
     st.markdown("---")
