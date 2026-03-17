@@ -911,38 +911,101 @@ with tab5:
 
             st.markdown("---")
 
-            # Avg followers and engagement per campaign
+            # ── Build per-campaign stats ───────────────────────────────────────
+            camp_rows = []
+            for camp, grp in cdf.groupby(campaign_col):
+                count = len(grp)
+                avg_fol = grp[followers_col].mean() if followers_col else None
+                avg_eng = grp[engagement_col].mean() if engagement_col else None
+                outreached_n = int(grp[outreach_col].notna().sum()) if outreach_col and outreach_col in grp.columns else 0
+                responded_n  = int(grp[reply_col].notna().sum())    if reply_col   and reply_col   in grp.columns else 0
+                if status_col and status_col in grp.columns:
+                    posted_n = int(grp[status_col].astype(str).str.strip().str.lower().eq("posted").sum())
+                else:
+                    posted_n = 0
+                resp_rate = (responded_n / outreached_n * 100) if outreached_n > 0 else None
+                post_rate = (posted_n   / outreached_n * 100) if outreached_n > 0 else None
+                camp_rows.append({
+                    "Campaign":            camp,
+                    "Count":               count,
+                    "Avg Followers":       avg_fol,
+                    "Avg Engagement Rate": avg_eng,
+                    "Outreached":          outreached_n,
+                    "Responded":           responded_n,
+                    "Posted":              posted_n,
+                    "_resp_rate":          resp_rate,
+                    "_post_rate":          post_rate,
+                })
+            camp_stats = pd.DataFrame(camp_rows)
+
+            # ── Funnel bar chart ───────────────────────────────────────────────
+            st.markdown("#### Campaign Outreach Funnel")
+            if camp_stats[["Outreached", "Responded", "Posted"]].sum().sum() > 0:
+                fig = go.Figure()
+                for col_name, color in [("Outreached", "#7c3aed"), ("Responded", "#22c55e"), ("Posted", "#f59e0b")]:
+                    fig.add_trace(go.Bar(
+                        name=col_name,
+                        x=camp_stats["Campaign"],
+                        y=camp_stats[col_name],
+                        marker_color=color,
+                        text=camp_stats[col_name],
+                        textposition="outside",
+                    ))
+                fig.update_layout(barmode="group", **CHART_LAYOUT, title="Outreached → Responded → Posted")
+                fig.update_xaxes(gridcolor="#1f2937")
+                fig.update_yaxes(gridcolor="#1f2937")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Map Outreach Date, Response Date, and Status columns to see the funnel.")
+
+            # ── Response & Post Rate charts ────────────────────────────────────
+            rate_df = camp_stats.dropna(subset=["_resp_rate"])
+            if not rate_df.empty:
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    fig = go.Figure(go.Bar(
+                        x=rate_df["Campaign"],
+                        y=rate_df["_resp_rate"],
+                        marker_color="#22c55e",
+                        text=rate_df["_resp_rate"].map(lambda x: f"{x:.1f}%"),
+                        textposition="outside",
+                    ))
+                    apply_dark_layout(fig, "Response Rate by Campaign")
+                    fig.update_yaxes(ticksuffix="%", gridcolor="#1f2937")
+                    fig.update_xaxes(gridcolor="#1f2937")
+                    st.plotly_chart(fig, use_container_width=True)
+                with col_r2:
+                    post_df = camp_stats.dropna(subset=["_post_rate"])
+                    if not post_df.empty:
+                        fig = go.Figure(go.Bar(
+                            x=post_df["Campaign"],
+                            y=post_df["_post_rate"],
+                            marker_color="#f59e0b",
+                            text=post_df["_post_rate"].map(lambda x: f"{x:.1f}%"),
+                            textposition="outside",
+                        ))
+                        apply_dark_layout(fig, "Post Rate by Campaign")
+                        fig.update_yaxes(ticksuffix="%", gridcolor="#1f2937")
+                        fig.update_xaxes(gridcolor="#1f2937")
+                        st.plotly_chart(fig, use_container_width=True)
+
+            # ── Summary table ──────────────────────────────────────────────────
             st.markdown("#### Campaign Performance Metrics")
-            camp_stats = cdf.groupby(campaign_col).agg(
-                Count=(campaign_col, "count"),
-                **({followers_col: (followers_col, "mean")} if followers_col else {}),
-                **({engagement_col: (engagement_col, "mean")} if engagement_col else {}),
-                **({posts_col: (posts_col, lambda x: (x.fillna(0) > 0).mean() * 100)} if posts_col else {}),
-            ).reset_index()
-
-            # Rename for display
-            rename_map = {campaign_col: "Campaign", "Count": "Count"}
-            if followers_col:
-                rename_map[followers_col] = "Avg Followers"
-            if engagement_col:
-                rename_map[engagement_col] = "Avg Engagement Rate"
-            if posts_col:
-                rename_map[posts_col] = "Post Rate %"
-            camp_stats = camp_stats.rename(columns=rename_map)
-
-            # Format
-            if "Avg Followers" in camp_stats.columns:
-                camp_stats["Avg Followers"] = camp_stats["Avg Followers"].apply(fmt_number)
-            if "Avg Engagement Rate" in camp_stats.columns:
-                camp_stats["Avg Engagement Rate"] = camp_stats["Avg Engagement Rate"].apply(
-                    lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
-                )
-            if "Post Rate %" in camp_stats.columns:
-                camp_stats["Post Rate %"] = camp_stats["Post Rate %"].apply(
-                    lambda x: f"{x:.1f}%" if pd.notna(x) else "—"
-                )
-
-            st.dataframe(camp_stats, hide_index=True, use_container_width=True)
+            display_stats = camp_stats.drop(columns=["_resp_rate", "_post_rate"]).copy()
+            display_stats["Avg Followers"] = display_stats["Avg Followers"].apply(
+                lambda x: fmt_number(x) if pd.notna(x) else "—"
+            )
+            display_stats["Avg Engagement Rate"] = display_stats["Avg Engagement Rate"].apply(
+                lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
+            )
+            # Compute formatted rates for display
+            display_stats["Response Rate"] = camp_stats.apply(
+                lambda r: f"{r['_resp_rate']:.1f}%" if pd.notna(r["_resp_rate"]) else "—", axis=1
+            )
+            display_stats["Post Rate"] = camp_stats.apply(
+                lambda r: f"{r['_post_rate']:.1f}%" if pd.notna(r["_post_rate"]) else "—", axis=1
+            )
+            st.dataframe(display_stats, hide_index=True, use_container_width=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -957,7 +1020,10 @@ with tab6:
     )
 
     # ── Build per-creator record ───────────────────────────────────────────────
+    # Drop rows with no name (blank rows from the sheet)
     roster = df.copy()
+    if name_col and name_col in roster.columns:
+        roster = roster[roster[name_col].notna() & (roster[name_col].astype(str).str.strip() != "")]
 
     # Responded = has a date in reply_col
     if reply_col and reply_col in roster.columns:
