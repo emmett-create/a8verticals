@@ -284,6 +284,18 @@ else:
     df["_days_to_reply"] = pd.NA
 
 vertical_col = get_col("vertical")
+
+# Normalize verticals: take first value only and standardize slash spacing
+if vertical_col and vertical_col in df.columns:
+    import re
+    def _norm_vertical(v):
+        if pd.isna(v):
+            return v
+        first = str(v).split(",")[0].strip()
+        first = re.sub(r'\s*/\s*', ' / ', first)
+        return first
+    df[vertical_col] = df[vertical_col].apply(_norm_vertical)
+
 platform_col = get_col("platform")
 followers_col = get_col("followers")
 engagement_col = get_col("engagement")
