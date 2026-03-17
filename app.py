@@ -475,7 +475,7 @@ with tab2:
 
             # Top influencers by followers
             st.markdown("#### Top 10 Influencers by Followers")
-            show_cols = [c for c in [name_col, platform_col, followers_col, status_col] if c]
+            show_cols = list(dict.fromkeys(c for c in [name_col, platform_col, followers_col, status_col] if c))
             top10 = vdf[show_cols].copy() if show_cols else vdf.copy()
             if followers_col and followers_col in top10.columns:
                 top10 = top10.sort_values(followers_col, ascending=False)
